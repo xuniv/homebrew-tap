@@ -415,7 +415,12 @@ def leak_scan(data, denylist):
     lower = data.lower()
     for term in denylist:
         require(term.encode().lower() not in lower, "publication gate rejected private marker")
-    for pattern in (rb"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----",
+    # Crypto-aware programs legitimately contain PEM *header strings*. Require a full
+    # encoded key block so those parser constants do not prevent rclone publication.
+    for pattern in (rb"-----BEGIN ((?:RSA |EC |OPENSSH |ENCRYPTED )?PRIVATE KEY)-----\r?\n"
+                    rb"(?:Proc-Type: [^\r\n]+\r?\nDEK-Info: [^\r\n]+\r?\n\r?\n)?"
+                    rb"[A-Za-z0-9+/=\r\n]{64,}-----END \1-----",
+                    rb"AGE-SECRET-KEY-1[0-9A-Z]{58}",
                     rb"gh[pousr]_[A-Za-z0-9]{30,}", rb"github_pat_[A-Za-z0-9_]{40,}",
                     rb"https://[^\s/]+:[^\s/@]+@github\.com",
                     rb"/tmp/tap-private-[A-Za-z0-9_-]+/"):

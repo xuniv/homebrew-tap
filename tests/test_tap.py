@@ -82,10 +82,12 @@ class GateTests(unittest.TestCase):
 
     def test_gate_rejects_secrets_and_private_markers(self):
         for data in (b"github.com/private/source", b"ghp_" + b"A" * 36,
-                     b"-----BEGIN OPENSSH PRIVATE KEY-----", b"/tmp/tap-private-123/src0/main.go"):
+                     b"-----BEGIN OPENSSH PRIVATE KEY-----\n" + b"A" * 80 + b"\n-----END OPENSSH PRIVATE KEY-----",
+                     b"AGE-SECRET-KEY-1" + b"A" * 58, b"/tmp/tap-private-123/src0/main.go"):
             with self.assertRaises(ValueError):
                 tap.leak_scan(data, ["github.com/private/source"])
         tap.leak_scan(b"Copyright original upstream authors", ["github.com/private/source"])
+        tap.leak_scan(b"PEM parser constant: -----BEGIN OPENSSH PRIVATE KEY-----", ["private.example"])
 
     def test_repacking_removes_author_and_timestamp_metadata(self):
         with tempfile.TemporaryDirectory() as d:
