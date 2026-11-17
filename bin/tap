@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -46,6 +47,10 @@ def age_key(path):
 
 
 def bootstrap(args):
+    missing = [name for name in ("gh", "ssh-keygen", "age", "age-keygen") if not shutil.which(name)]
+    if missing:
+        raise FileNotFoundError("Missing required commands: " + ", ".join(missing) +
+                                ". On macOS run: brew install gh age")
     repo = args.tap
     tap.require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.source))
     tap.require(re.fullmatch(tap.NAME, args.project))
@@ -153,6 +158,9 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except FileNotFoundError as error:
+        print("Setup failed:", error, file=sys.stderr)
+        sys.exit(1)
     except Exception as error:
         print("Setup failed:", error, file=sys.stderr)
         print("Use a personal gh login with repository administration, environment, secrets and workflow permissions.", file=sys.stderr)
