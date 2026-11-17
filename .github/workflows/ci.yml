@@ -21,7 +21,25 @@ jobs:
           persist-credentials: false
       - name: Validate Homebrew Ruby syntax
         run: |
-          for formula in Formula/*.rb; do
-            [ -f "$formula" ] || continue
+          python3 - <<'PY'
+          import os, sys
+          from pathlib import Path
+          sys.path.insert(0, "tools")
+          import tap
+          out = Path(os.environ["RUNNER_TEMP"]) / "fixture-formulae"
+          out.mkdir()
+          for name, meta in tap.public_project("tools")["packages"].items():
+              hashes = {tap.asset_name(name, "1.2.3", t): "0" * 64 for t in tap.BREW_TARGETS}
+              (out / (name + ".rb")).write_text(tap.formula(name, "1.2.3", meta, hashes, tap.BREW_TARGETS, "xuniv/homebrew-tap"))
+          PY
+          for formula in "$RUNNER_TEMP/fixture-formulae/"*.rb; do
             ruby -c "$formula"
           done
+      - name: Load generated formulae in Homebrew for every desktop OS and CPU
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+        run: |
+          brew tap xuniv/tap "$GITHUB_WORKSPACE"
+          mkdir -p "$(brew --repository xuniv/tap)/Formula"
+          cp "$RUNNER_TEMP/fixture-formulae/"*.rb "$(brew --repository xuniv/tap)/Formula/"
+          brew readall --os=all --arch=all xuniv/tap

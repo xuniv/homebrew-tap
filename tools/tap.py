@@ -214,10 +214,17 @@ def plan(args, work):
         raw = capture(["git", "-C", repo, "show", commit + ":.tap.json"])
         require(len(raw) <= 65536)
         data = manifest(json.loads(raw), public)
+        resolved = {config["ref"]: commit}
+
+        def resolve(ref):
+            if ref not in resolved:
+                resolved[ref] = fetch(ref)
+            return resolved[ref]
+
         lock = {"schema": 1, "packages": {}}
         for name, package in data["packages"].items():
-            package = {**package, "commit": fetch(package["ref"])}
-            package["modules"] = [{**m, "commit": fetch(m["ref"])} for m in package["modules"]]
+            package = {**package, "commit": resolve(package["ref"])}
+            package["modules"] = [{**m, "commit": resolve(m["ref"])} for m in package["modules"]]
             lock["packages"][name] = package
     versions = {name: p["version"] for name, p in lock["packages"].items()}
     write_json(work / "lock.json", lock)
