@@ -39,7 +39,16 @@ jobs:
         env:
           HOMEBREW_NO_AUTO_UPDATE: "1"
         run: |
-          brew tap xuniv/tap "$GITHUB_WORKSPACE"
+          set -euo pipefail
+          brew trust --tap xuniv/tap
+          brew tap xuniv/tap
           mkdir -p "$(brew --repository xuniv/tap)/Formula"
           cp "$RUNNER_TEMP/fixture-formulae/"*.rb "$(brew --repository xuniv/tap)/Formula/"
-          brew readall --os=all --arch=all xuniv/tap
+          brew readall --os=all --arch=all xuniv/tap 2>&1 | tee "$RUNNER_TEMP/readall.log"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          log = (Path(os.environ["RUNNER_TEMP"]) / "readall.log").read_text().lower()
+          if "not trusted" in log or "untrusted tap" in log:
+              raise SystemExit("Homebrew skipped untrusted formulae")
+          PY

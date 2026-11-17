@@ -50,6 +50,11 @@ xattr -d com.apple.quarantine ./dclone 2>/dev/null || true
 codesign --force --sign - --timestamp=none ./dclone
 ```
 
+Current Homebrew accepts the fully qualified `brew install xuniv/tap/NAME` as trust for that
+specific formula. For tap-wide inspection commands such as `brew readall`, explicitly trust the
+tap with `brew trust --tap xuniv/tap`. CI does this on its disposable runners and rejects a
+validation log that says formulae were skipped as untrusted.
+
 ## One-time owner setup
 
 The owner-side command requires Python 3.12+, Git, `gh`, `ssh-keygen`, `age` and `age-keygen`.

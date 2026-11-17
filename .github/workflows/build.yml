@@ -193,7 +193,8 @@ jobs:
           HOMEBREW_NO_INSTALL_CLEANUP: "1"
           PROJECT: ${{ inputs.project }}
         run: |
-          brew tap xuniv/tap "$GITHUB_WORKSPACE"
+          brew trust --tap xuniv/tap
+          brew tap xuniv/tap
           for package in $(python3 -c 'import json,os; print(" ".join(json.load(open("packages/"+os.environ["PROJECT"]+".json"))["packages"]))'); do
             brew install "xuniv/tap/$package"
             brew test "xuniv/tap/$package"
