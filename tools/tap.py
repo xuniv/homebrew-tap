@@ -226,6 +226,7 @@ def plan(args, work):
     # Outputs contain public package names/versions only. Private refs and commands remain sealed.
     output("versions", versions)
     output("targets", public["targets"])
+    output("brew", set(BREW_TARGETS) <= set(public["targets"]))
 
 
 def toolchain(version, work):
@@ -523,8 +524,10 @@ def publish(args, work):
         if probe.returncode == 0 and not json.loads(probe.stdout)["isDraft"]:
             download = work / name
             download.mkdir()
-            run(["gh", "release", "download", tag, "-R", repo, "--dir", download, "--pattern", "SHA256SUMS"])
+            run(["gh", "release", "download", tag, "-R", repo, "--dir", download])
+            require({p.name for p in download.iterdir()} == set(assets) | {"SHA256SUMS"})
             require((download / "SHA256SUMS").read_bytes() == checksum.read_bytes(), "published version is immutable")
+            require(all(hashlib.sha256((download / a).read_bytes()).hexdigest() == hashes[a] for a in assets))
         else:
             require(probe.returncode in (0, 1))
             notes = work / "notes.txt"

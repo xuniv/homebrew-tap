@@ -32,6 +32,7 @@ jobs:
     outputs:
       versions: ${{ steps.plan.outputs.versions }}
       targets: ${{ steps.plan.outputs.targets }}
+      brew: ${{ steps.plan.outputs.brew }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -162,7 +163,8 @@ jobs:
           retention-days: 3
 
   install:
-    needs: publish
+    needs: [plan, publish]
+    if: needs.plan.outputs.brew == 'true'
     strategy:
       fail-fast: false
       matrix:
