@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Owner-side setup. Run locally with a personal gh login, never inside public CI."""
+import argparse
+import base64
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+import tap
+
+
+def api(path, data=None):
+    return tap.gh_json([path], data)
+
+
+def secret(repo, env, name, value):
+    tap.run(["gh", "secret", "set", name, "-R", repo, "--env", env], input=value.encode())
+
+
+def variable(repo, name, value, env=None):
+    args = ["gh", "variable", "set", name, "-R", repo]
+    if env:
+        args += ["--env", env]
+    tap.run(args, input=value.encode())
+
+
+def environment(repo, name):
+    tap.gh_json(["--method", "PUT", f"repos/{repo}/environments/{name}"], {
+        "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True}})
+    path = f"repos/{repo}/environments/{name}/deployment-branch-policies"
+    policies = api(path)["branch_policies"]
+    if not any(p["name"] == "main" for p in policies):
+        api(path, {"name": "main", "type": "branch"})
+
+
+def age_key(path):
+    if not path.exists():
+        tap.run(["age-keygen", "-o", path], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        path.chmod(0o600)
+    recipient = tap.capture(["age-keygen", "-y", path]).decode().strip()
+    return path.read_text(), recipient
+
+
+def bootstrap(args):
+    repo = args.tap
+    tap.require(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", args.source))
+    tap.require(re.fullmatch(tap.NAME, args.project))
+    owner = repo.split("/")[0]
+    tap.require(api("user")["login"].lower() == owner.lower(), "gh must be logged in as the tap owner")
+    state = args.state.expanduser().resolve()
+    state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    state.chmod(0o700)
+    project_state = state / args.project
+    project_state.mkdir(mode=0o700, exist_ok=True)
+    metadata = api("repos/" + args.source)
+    ref = args.ref or "refs/heads/" + metadata["default_branch"]
+    tap.git_ref(ref)
+    raw = api(f"repos/{args.source}/contents/.tap.json?ref={ref}")
+    config = json.loads(base64.b64decode(raw["content"]))
+    registry_path = tap.ROOT / "packages" / (args.project + ".json")
+    if not registry_path.exists():
+        tap.write_json(registry_path, {"schema": 1, "packages": {
+            name: {"description": name + " command-line utility", "homepage": "https://github.com/" + repo,
+                   "license": "cannot_represent", "test": ["version"]} for name in config["packages"]},
+            "targets": list(tap.TARGETS)})
+    tap.manifest(config, tap.public_project(args.project))
+    # Check administration permissions before generating persistent private keys.
+    env = "tap-" + args.project
+    environment(repo, env)
+    environment(repo, "tap-publish")
+    key = project_state / "source-key"
+    if not key.exists():
+        tap.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", "tap-read-only", "-f", key])
+        key.chmod(0o600)
+    public_key = Path(str(key) + ".pub").read_text().strip()
+    keys = api("repos/" + args.source + "/keys")
+    if not any(k["key"].split()[:2] == public_key.split()[:2] and k["read_only"] for k in keys):
+        api("repos/" + args.source + "/keys", {"title": "homebrew-tap-" + args.project,
+                                             "key": public_key, "read_only": True})
+    log_identity, log_recipient = age_key(state / "log-identity.txt")
+    payload_identity, payload_recipient = age_key(state / "payload-identity.txt")
+    lock_identity, lock_recipient = age_key(project_state / "lock-identity.txt")
+    secret(repo, env, "TAP_SOURCE", json.dumps({"repo": args.source, "ref": ref}))
+    secret(repo, env, "TAP_KEY", key.read_text())
+    secret(repo, env, "TAP_LOCK_IDENTITY", lock_identity)
+    variable(repo, "TAP_LOCK_RECIPIENT", lock_recipient, env)
+    variable(repo, "TAP_PAYLOAD_RECIPIENT", payload_recipient)
+    variable(repo, "TAP_LOG_RECIPIENT", log_recipient)
+    secret(repo, "tap-publish", "TAP_PAYLOAD_IDENTITY", payload_identity)
+    denyfile = state / "denylist.txt"
+    terms = set(denyfile.read_text().splitlines()) if denyfile.exists() else set()
+    terms |= {args.source, "github.com/" + args.source}
+    if args.denylist_file:
+        terms.update(args.denylist_file.expanduser().read_text().splitlines())
+    terms = {t.strip() for t in terms if t.strip()}
+    denyfile.write_text("\n".join(sorted(terms)) + "\n")
+    denyfile.chmod(0o600)
+    secret(repo, "tap-publish", "TAP_DENYLIST", denyfile.read_text())
+    # The diagnostics identity stays exclusively on the operator's computer.
+    print("Project configured. Keep the local state directory private and backed up.")
+    print("Diagnostics identity:", state / "log-identity.txt")
+    if args.dispatch:
+        tap.run(["gh", "workflow", "run", "build.yml", "-R", repo, "--ref", "main", "-f", "project=" + args.project])
+
+
+def discover(args):
+    # Discovery uses the owner's local gh session. Public CI never gets account-wide source access.
+    command = ["gh", "api", "--paginate", "--slurp", "user/repos?per_page=100&affiliation=owner"]
+    repositories = json.loads(tap.capture(command))
+    count = 0
+    for page in repositories:
+        for repo in page:
+            if repo["owner"]["login"].lower() != args.tap.split("/")[0].lower() or repo["archived"]:
+                continue
+            probe = subprocess.run(["gh", "api", f"repos/{repo['full_name']}/contents/.tap.json"],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if probe.returncode == 0:
+                count += 1
+                # Do not write private repository names to the public tap registry.
+                print(f"Manifest found ({count}). Register locally with a public alias using bootstrap --source OWNER/REPO --project ALIAS.")
+                # Private owner-side context is saved locally for registration, never committed.
+                state = args.state.expanduser()
+                state.mkdir(mode=0o700, parents=True, exist_ok=True)
+                path = state / "discovered.json"
+                records = json.loads(path.read_text()) if path.exists() else []
+                if repo["full_name"] not in records:
+                    records.append(repo["full_name"])
+                tap.write_json(path, records)
+                path.chmod(0o600)
+    print(f"Found {count} manifest(s). Private source names are in the local discovered.json file.")
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--tap", default="xuniv/homebrew-tap")
+    p.add_argument("--state", type=Path, default=Path("~/.config/xuniv-tap"))
+    commands = p.add_subparsers(dest="command", required=True)
+    b = commands.add_parser("bootstrap", help="register a .tap.json source and provision scoped CI keys")
+    b.add_argument("--source", required=True)
+    b.add_argument("--project", required=True)
+    b.add_argument("--ref")
+    b.add_argument("--denylist-file", type=Path)
+    b.add_argument("--dispatch", action="store_true")
+    commands.add_parser("discover", help="find owner repositories containing a root .tap.json")
+    args = p.parse_args()
+    globals()[args.command](args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print("Setup failed:", error, file=sys.stderr)
+        print("Use a personal gh login with repository administration, environment, secrets and workflow permissions.", file=sys.stderr)
+        sys.exit(1)

@@ -1,0 +1,217 @@
+name: Anonymous binary publishing
+run-name: Publish ${{ inputs.project }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Public project alias (no private repository names or refs)
+        type: string
+        required: true
+        default: tools
+
+permissions: {}
+concurrency:
+  group: tap-publication
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    environment:
+      name: tap-${{ inputs.project }}
+      deployment: false
+    outputs:
+      versions: ${{ steps.plan.outputs.versions }}
+      targets: ${{ steps.plan.outputs.targets }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install encryption tool
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq age >/dev/null
+      - name: Resolve private build instructions
+        id: plan
+        env:
+          TAP_SOURCE: ${{ secrets.TAP_SOURCE }}
+          TAP_KEY: ${{ secrets.TAP_KEY }}
+          TAP_LOCK_RECIPIENT: ${{ vars.TAP_LOCK_RECIPIENT }}
+          TAP_LOG_RECIPIENT: ${{ vars.TAP_LOG_RECIPIENT }}
+          PROJECT: ${{ inputs.project }}
+        run: python3 tools/tap.py plan --project "$PROJECT" --out "$RUNNER_TEMP/sealed"
+      - name: Transfer sealed instructions
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lock
+          path: ${{ runner.temp }}/sealed/lock.age
+          if-no-files-found: error
+          retention-days: 1
+      - name: Preserve encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diag-plan
+          path: ${{ runner.temp }}/sealed/diag/*.age
+          if-no-files-found: ignore
+          retention-days: 3
+
+  build:
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    permissions:
+      contents: read
+    environment:
+      name: tap-${{ inputs.project }}
+      deployment: false
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        target: ${{ fromJSON(needs.plan.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install encryption tool
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq age >/dev/null
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.1
+        with:
+          name: lock
+          path: ${{ runner.temp }}/instructions
+      - name: Build with private diagnostics
+        env:
+          TAP_SOURCE: ${{ secrets.TAP_SOURCE }}
+          TAP_KEY: ${{ secrets.TAP_KEY }}
+          TAP_LOCK_IDENTITY: ${{ secrets.TAP_LOCK_IDENTITY }}
+          TAP_PAYLOAD_RECIPIENT: ${{ vars.TAP_PAYLOAD_RECIPIENT }}
+          TAP_LOG_RECIPIENT: ${{ vars.TAP_LOG_RECIPIENT }}
+          PROJECT: ${{ inputs.project }}
+          TARGET: ${{ matrix.target }}
+        run: >-
+          python3 tools/tap.py build --project "$PROJECT" --target "$TARGET"
+          --lock "$RUNNER_TEMP/instructions/lock.age" --out "$RUNNER_TEMP/sealed"
+      - name: Transfer encrypted binaries
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: payload-${{ matrix.target }}
+          path: ${{ runner.temp }}/sealed/payload.age
+          if-no-files-found: error
+          retention-days: 1
+      - name: Preserve encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diag-${{ matrix.target }}
+          path: ${{ runner.temp }}/sealed/diag/*.age
+          if-no-files-found: ignore
+          retention-days: 3
+
+  publish:
+    needs: [plan, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    environment:
+      name: tap-publish
+      deployment: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Install encryption tool
+        run: sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq age >/dev/null
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.1
+        with:
+          pattern: payload-*
+          path: ${{ runner.temp }}/payloads
+      - name: Gate binaries on a clean runner
+        env:
+          TAP_PAYLOAD_IDENTITY: ${{ secrets.TAP_PAYLOAD_IDENTITY }}
+          TAP_DENYLIST: ${{ secrets.TAP_DENYLIST }}
+          TAP_LOG_RECIPIENT: ${{ vars.TAP_LOG_RECIPIENT }}
+          TAP_VERSIONS: ${{ needs.plan.outputs.versions }}
+          PROJECT: ${{ inputs.project }}
+        run: >-
+          python3 tools/tap.py gate --project "$PROJECT"
+          --payloads "$RUNNER_TEMP/payloads" --out "$RUNNER_TEMP/verified"
+      - name: Publish immutable releases and formulae
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_LOG_RECIPIENT: ${{ vars.TAP_LOG_RECIPIENT }}
+          TAP_VERSIONS: ${{ needs.plan.outputs.versions }}
+          PROJECT: ${{ inputs.project }}
+        run: python3 tools/tap.py publish --project "$PROJECT" --out "$RUNNER_TEMP/verified"
+      - name: Preserve encrypted diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: diag-publish
+          path: ${{ runner.temp }}/verified/diag/*.age
+          if-no-files-found: ignore
+          retention-days: 3
+
+  install:
+    needs: publish
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-latest, ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Set up Homebrew
+        run: |
+          if ! command -v brew >/dev/null; then
+            curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh -o "$RUNNER_TEMP/install-brew.sh"
+            NONINTERACTIVE=1 bash "$RUNNER_TEMP/install-brew.sh"
+          fi
+          if [ -x /home/linuxbrew/.linuxbrew/bin/brew ]; then
+            echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+          fi
+      - name: Install and test the public formulae
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          PROJECT: ${{ inputs.project }}
+        run: |
+          brew tap xuniv/tap "$GITHUB_WORKSPACE"
+          for package in $(python3 -c 'import json,os; print(" ".join(json.load(open("packages/"+os.environ["PROJECT"]+".json"))["packages"]))'); do
+            brew install "xuniv/tap/$package"
+            brew test "xuniv/tap/$package"
+            if [ "$(uname -s)" = Darwin ]; then
+              codesign --verify --strict "$(brew --prefix "$package")/bin/$package"
+            fi
+          done
+
+  cleanup:
+    if: always()
+    needs: [plan, build, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+    steps:
+      - name: Remove sealed transfer artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --paginate \
+            --jq '.artifacts[] | select(.name == "lock" or (.name | startswith("payload-"))) | .id' \
+            | while read -r id; do gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"; done

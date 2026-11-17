@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "packages": {
+    "dclone": {
+      "description": "Rclone fork with a Degoo backend, installed as dclone",
+      "homepage": "https://github.com/xuniv/homebrew-tap",
+      "license": "cannot_represent",
+      "test": ["version"]
+    },
+    "degoo": {
+      "description": "Command-line client for Degoo cloud storage",
+      "homepage": "https://github.com/xuniv/homebrew-tap",
+      "license": "cannot_represent",
+      "test": ["version"]
+    }
+  },
+  "targets": [
+    "darwin-arm64", "darwin-amd64",
+    "linux-amd64", "linux-arm64", "linux-armv7", "linux-386",
+    "android-arm64", "android-armv7", "android-amd64", "android-386"
+  ]
+}
