@@ -1,4 +1,5 @@
 import io
+import gzip
 import json
 import os
 from pathlib import Path
@@ -19,12 +20,17 @@ class GateTests(unittest.TestCase):
         for case in ("../outside", "link", "duplicate", "oversize"):
             with self.subTest(case=case), tempfile.TemporaryDirectory() as d:
                 path = Path(d) / "bad.tar.gz"
+                if case == "oversize":
+                    item = tarfile.TarInfo("file")
+                    item.size = tap.MAX_BINARY + 1
+                    path.write_bytes(gzip.compress(item.tobuf() + b"\0" * 1024))
+                    with self.assertRaises(ValueError):
+                        tap.unpack(path)
+                    continue
                 with tarfile.open(path, "w:gz") as archive:
                     item = tarfile.TarInfo("../outside" if case == "../outside" else "file")
                     if case == "link":
                         item.type, item.linkname = tarfile.SYMTYPE, "/etc/passwd"
-                    if case == "oversize":
-                        item.size = tap.MAX_BINARY + 1
                     archive.addfile(item)
                     if case == "duplicate":
                         archive.addfile(item)

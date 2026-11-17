@@ -266,7 +266,8 @@ def sanitize_modules(src, modules):
     with (src / "go.mod").open("a") as f:
         for module in modules:
             if module["module"] != own_module:
-                f.write(f'\nreplace {module["public_module"]} => {module["directory"]}\n')
+                relative = os.path.relpath(module["directory"], src)
+                f.write(f'\nreplace {module["public_module"]} => {relative}\n')
 
 
 def android_cc(arch):
@@ -332,7 +333,7 @@ def build(args, work):
                "SOURCE_DATE_EPOCH": "0", "TZ": "UTC"}
         if goos == "android":
             env.update(CGO_ENABLED="1", CC=android_cc(arch),
-                       CGO_CFLAGS="-O2 -g0 -ffile-prefix-map=" + str(work) + "=/build",
+                       CGO_CFLAGS="-O2 -g0 -ffile-prefix-map=/tmp=/build",
                        CGO_LDFLAGS="-Wl,--build-id=none")
         (work / "tmp").mkdir(exist_ok=True)
         run(["/bin/bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", package["command"]],
