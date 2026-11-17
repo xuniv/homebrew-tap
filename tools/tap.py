@@ -262,6 +262,11 @@ def sanitize_modules(src, modules):
                 text = path.read_text()
                 for before, after in replacements:
                     text = text.replace(before, after)
+                    if path.name == "go.mod":
+                        # Local replacements do not need the original pseudo-version, which can
+                        # otherwise disclose a private commit in Go's embedded build-info.
+                        text = re.sub(r"(?m)^(\s*(?:require\s+)?" + re.escape(after) + r")\s+v[^\s)]+",
+                                      r"\g<1> v0.0.0", text)
                 path.write_text(text)
     with (src / "go.mod").open("a") as f:
         for module in modules:
@@ -324,13 +329,15 @@ def build(args, work):
         home.mkdir(parents=True)
         env = {"PATH": str(bins[package["go"]]) + ":/usr/bin:/bin", "HOME": str(home),
                "TMPDIR": str(work / "tmp"), "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
-               "GOOS": goos, "GOARCH": arch, "GOARM": "7", "GOTOOLCHAIN": "local",
+               "GOOS": goos, "GOARCH": arch, "GOARM": "7", "GOAMD64": "v1", "GOTOOLCHAIN": "local",
                "CGO_ENABLED": "0", "GOCACHE": str(work / "cache"),
                "GOMODCACHE": str(work / "modcache"), "GOPATH": str(work / "gopath"),
                "GOFLAGS": "-mod=readonly -trimpath -buildvcs=false", "GIT_CONFIG_NOSYSTEM": "1",
                "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0",
                "TAP_OUT": str(out), "VERSION": package["version"],
                "SOURCE_DATE_EPOCH": "0", "TZ": "UTC"}
+        if goos == "linux" and arch == "386":
+            env["GO386"] = "softfloat"
         if goos == "android":
             env.update(CGO_ENABLED="1", CC=android_cc(arch),
                        CGO_CFLAGS="-O2 -g0 -ffile-prefix-map=/tmp=/build",

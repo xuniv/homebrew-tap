@@ -122,12 +122,44 @@ sys.exit(tap.private_main(argparse.Namespace(command="plan", out=Path(sys.argv[1
             src, lib = root / "src", root / "lib"
             src.mkdir()
             lib.mkdir()
-            (src / "go.mod").write_text("module upstream/public\nrequire private.example/secret v1.0.0\n")
+            (src / "go.mod").write_text("module upstream/public\nrequire private.example/secret v0.0.0-20260101000000-123456abcdef\n")
             (src / "main.go").write_text('package main\nimport "private.example/secret/api"\n')
             (lib / "go.mod").write_text("module private.example/secret\n")
             tap.sanitize_modules(src, [{"module": "private.example/secret", "public_module": "tap.local/lib", "directory": str(lib)}])
             self.assertNotIn("private.example", (src / "go.mod").read_text())
+            self.assertNotIn("123456abcdef", (src / "go.mod").read_text())
+            self.assertIn("require tap.local/lib v0.0.0", (src / "go.mod").read_text())
             self.assertIn("tap.local/lib/api", (src / "main.go").read_text())
+
+    def test_full_gate_requires_every_expected_asset_and_checks_inner_files(self):
+        import argparse
+        import shutil
+        public = {"schema": 1, "packages": {"example": {}}, "targets": ["linux-arm64"]}
+        for scenario in ("valid", "missing", "private-marker", "wrong-cpu"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as d:
+                root = Path(d)
+                work, inputs, out = root / "work", root / "inputs", root / "out"
+                work.mkdir()
+                directory = inputs / "payload-linux-arm64"
+                directory.mkdir(parents=True)
+                binary = bytes(self.elf("amd64" if scenario == "wrong-cpu" else "arm64"))
+                notice = b"private.example/source" if scenario == "private-marker" else b"modified software"
+                inner = root / "inner.tar.gz"
+                tap.bundle(inner, [("example", binary, True), ("NOTICE.txt", notice, False), ("LICENSES/0.txt", b"License", False)])
+                name = "example-1.2.3-linux-arm64.tar.gz"
+                tap.bundle(directory / "payload.age", [] if scenario == "missing" else [(name, inner.read_bytes(), False)])
+                args = argparse.Namespace(project="project", payloads=inputs, out=out)
+                env = {"TAP_VERSIONS": '{"example":"1.2.3"}', "TAP_DENYLIST": "private.example/source", "TAP_PAYLOAD_IDENTITY": "test"}
+                def decrypt(source, destination, **kwargs):
+                    shutil.copyfile(source, destination)
+                with patch.object(tap, "public_project", return_value=public), patch.object(tap, "crypt", decrypt), patch.dict(os.environ, env):
+                    if scenario == "valid":
+                        tap.gate(args, work)
+                        self.assertTrue((out / name).exists())
+                        self.assertEqual(tap.read_json(out / "versions.json"), {"example": "1.2.3"})
+                    else:
+                        with self.assertRaises(ValueError):
+                            tap.gate(args, work)
 
     def test_formula_routes_all_supported_brew_cpus_and_limits_mac_changes(self):
         meta = tap.public_project("tools")["packages"]["degoo"]

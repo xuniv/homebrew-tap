@@ -26,7 +26,7 @@ Check the SHA-256 before extracting, then put the executable in your terminal's 
 | `linux-arm64` | 64-bit ARM / AArch64 Linux, glibc or musl; Homebrew on supported glibc systems |
 | `linux-amd64` | x86_64 Linux, glibc or musl; Homebrew on supported glibc systems |
 | `linux-armv7` | 32-bit ARMv7 Linux, static hard-float binary; direct download |
-| `linux-386` | 32-bit x86 Linux, including iSH's Alpine userspace on iOS; direct download |
+| `linux-386` | 32-bit x86 Linux with soft-float for iSH's Alpine userspace on iOS; direct download |
 | `android-arm64` | 64-bit ARM Termux, Android 7/API 24 or newer |
 | `android-armv7` | 32-bit ARM Termux, Android 7/API 24 or newer |
 | `android-amd64` | x86_64 Android / Termux and Android emulators, API 24 or newer |
@@ -37,6 +37,7 @@ archives for Termux (Bionic), and **Linux** archives for Linux/proot/iSH (static
 Homebrew does not officially support musl, Android, ARMv7, 32-bit x86 or iOS. Those downloads are
 independent of the tap. Native iOS, a-Shell/WASI and arbitrary iOS terminal apps are not supported.
 Cross-compilation and structural validation do not replace device testing on these terminals.
+The static Linux and pure-Go macOS builds omit CGO-only features such as some FUSE mount backends.
 
 The Homebrew formula uses the current `on_macos` / `on_linux` and `on_arm` / `on_intel` DSL,
 architecture-specific SHA-256 downloads and `post_install`. On macOS it removes quarantine only
